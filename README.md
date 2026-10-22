@@ -1,6 +1,6 @@
 # Data Engineering Launchpad
 
-An open-source, hands-on path from your first SQL query to designing reliable data platforms. Start with the runnable order-processing pipeline, then work through the [roadmap](docs/roadmap.md), [interview bank](docs/interviews.md), and [contribution guide](CONTRIBUTING.md).
+An open-source, hands-on path from your first SQL query to designing reliable data platforms. Start with the runnable order-processing pipeline, then work through the [SQL lab](labs/02-sql/README.md), [roadmap](docs/roadmap.md), [interview bank](docs/interviews.md), and [contribution guide](CONTRIBUTING.md).
 
 > This is a growing curriculum, not a claim that one repository can teach every tool or guarantee an interview outcome. The first release focuses on transferable fundamentals. Cloud, streaming, and distributed-system modules are planned and need contributors.
 
@@ -31,9 +31,10 @@ The flow is `CSV -> validated bronze_orders -> latest silver_orders -> daily_rev
 
 ## What is in this release
 
-- A tested, local batch pipeline and sample dataset.
+- A tested, local batch pipeline, sample dataset, and SQL practice lab.
 - Four experience-based learning tracks with explicit outcomes.
 - Interview questions with answer rubrics, not memorized scripts.
+- [Engineering standards](docs/engineering-standards.md) for future labs.
 - Community contribution, conduct, security, and issue templates.
 - CI that runs unit tests and an end-to-end smoke check.
 
