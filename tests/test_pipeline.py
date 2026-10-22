@@ -1,0 +1,81 @@
+import csv
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from launchpad.pipeline import read_orders, report, run
+
+HEADER = ["order_id", "customer_id", "order_date", "amount_cents", "status", "updated_at"]
+
+
+class PipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.source = self.directory / "orders.csv"
+        self.database = self.directory / "orders.db"
+
+    def write(self, rows):
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(HEADER)
+            writer.writerows(rows)
+
+    def test_rerun_is_idempotent_and_latest_version_wins(self):
+        self.write([
+            ["a", "c1", "2026-01-01", "100", "pending", "2026-01-01T10:00:00Z"],
+            ["a", "c1", "2026-01-01", "100", "paid", "2026-01-02T10:00:00Z"],
+            ["b", "c2", "2026-01-02", "200", "paid", "2026-01-02T11:00:00Z"],
+        ])
+        first = run(self.source, self.database)
+        self.assertEqual(first["bronze_versions"], 3)
+        self.assertEqual(first["current_orders"], 2)
+        self.assertEqual(run(self.source, self.database), first)
+        self.assertEqual(report(self.database), [
+            {"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100},
+            {"order_date": "2026-01-02", "paid_orders": 1, "revenue_cents": 200},
+        ])
+
+    def test_refund_removes_revenue(self):
+        self.write([
+            ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"],
+            ["a", "c1", "2026-01-01", "100", "refunded", "2026-01-03T10:00:00Z"],
+        ])
+        run(self.source, self.database)
+        self.assertEqual(report(self.database), [])
+
+    def test_conflicting_version_rolls_back(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        run(self.source, self.database)
+        self.write([
+            ["b", "c2", "2026-01-01", "200", "paid", "2026-01-01T11:00:00Z"],
+            ["a", "c1", "2026-01-01", "999", "paid", "2026-01-01T10:00:00Z"],
+        ])
+        with self.assertRaisesRegex(ValueError, "Conflicting version"):
+            run(self.source, self.database)
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM bronze_orders").fetchone()[0], 1)
+        self.assertEqual(report(self.database)[0]["revenue_cents"], 100)
+
+    def test_invalid_later_row_never_writes(self):
+        self.write([
+            ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"],
+            ["b", "c2", "2026-01-01", "-1", "paid", "2026-01-01T11:00:00Z"],
+        ])
+        with self.assertRaisesRegex(ValueError, "row 3"):
+            run(self.source, self.database)
+        self.assertFalse(self.database.exists())
+
+    def test_timezone_normalization(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T15:30:00+05:30"]])
+        self.assertEqual(read_orders(self.source)[0][-1], "2026-01-01T10:00:00+00:00")
+
+    def test_missing_report_database_fails(self):
+        with self.assertRaises(FileNotFoundError):
+            report(self.database)
+
+
+if __name__ == "__main__":
+    unittest.main()
