@@ -82,57 +82,64 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
             f"(the Lab 01 sample is labs/01-orders/orders.csv). Original error: {exc}"
         ) from exc
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(database_path) as connection:
-        initialize(connection)
-        with connection:
-            for row in rows:
-                existing = connection.execute(
-                    "SELECT order_id, customer_id, order_date, amount_cents, status, updated_at "
-                    "FROM bronze_orders WHERE order_id = ? AND updated_at = ?",
-                    (row[0], row[5]),
-                ).fetchone()
-                if existing is not None:
-                    if existing != row:
-                        raise ValueError(f"Conflicting version for order {row[0]} at {row[5]}")
-                    continue
-                connection.execute(
-                    "INSERT INTO bronze_orders VALUES (?, ?, ?, ?, ?, ?)", row
-                )
+    try:
+        with sqlite3.connect(database_path) as connection:
+            initialize(connection)
+            with connection:
+                for row in rows:
+                    existing = connection.execute(
+                        "SELECT order_id, customer_id, order_date, amount_cents, status, updated_at "
+                        "FROM bronze_orders WHERE order_id = ? AND updated_at = ?",
+                        (row[0], row[5]),
+                    ).fetchone()
+                    if existing is not None:
+                        if existing != row:
+                            raise ValueError(f"Conflicting version for order {row[0]} at {row[5]}")
+                        continue
+                    connection.execute(
+                        "INSERT INTO bronze_orders VALUES (?, ?, ?, ?, ?, ?)", row
+                    )
 
-            connection.execute("DELETE FROM silver_orders")
-            connection.execute(
-                """
-                INSERT INTO silver_orders
-                SELECT order_id, customer_id, order_date, amount_cents, status, updated_at
-                FROM (
-                    SELECT *, ROW_NUMBER() OVER (
-                        PARTITION BY order_id ORDER BY updated_at DESC
-                    ) AS rank FROM bronze_orders
-                ) WHERE rank = 1
-                """
-            )
-            connection.execute("DELETE FROM daily_revenue")
-            connection.execute(
-                """
-                INSERT INTO daily_revenue
-                SELECT order_date, COUNT(*), SUM(amount_cents)
-                FROM silver_orders WHERE status = 'paid'
-                GROUP BY order_date
-                """
-            )
-            bronze = connection.execute("SELECT COUNT(*) FROM bronze_orders").fetchone()[0]
-            silver = connection.execute("SELECT COUNT(*) FROM silver_orders").fetchone()[0]
-            gold = connection.execute("SELECT COUNT(*) FROM daily_revenue").fetchone()[0]
-            if silver > bronze or gold > silver:
-                raise RuntimeError("Data quality check failed: invalid table counts")
+                connection.execute("DELETE FROM silver_orders")
+                connection.execute(
+                    """
+                    INSERT INTO silver_orders
+                    SELECT order_id, customer_id, order_date, amount_cents, status, updated_at
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER (
+                            PARTITION BY order_id ORDER BY updated_at DESC
+                        ) AS rank FROM bronze_orders
+                    ) WHERE rank = 1
+                    """
+                )
+                connection.execute("DELETE FROM daily_revenue")
+                connection.execute(
+                    """
+                    INSERT INTO daily_revenue
+                    SELECT order_date, COUNT(*), SUM(amount_cents)
+                    FROM silver_orders WHERE status = 'paid'
+                    GROUP BY order_date
+                    """
+                )
+                bronze = connection.execute("SELECT COUNT(*) FROM bronze_orders").fetchone()[0]
+                silver = connection.execute("SELECT COUNT(*) FROM silver_orders").fetchone()[0]
+                gold = connection.execute("SELECT COUNT(*) FROM daily_revenue").fetchone()[0]
+                if silver > bronze or gold > silver:
+                    raise RuntimeError("Data quality check failed: invalid table counts")
+    except sqlite3.DatabaseError as exc:
+        raise type(exc)(
+            f"Cannot use database {database_path} for run. Use a SQLite file path "
+            f"created by the pipeline. Original error: {exc}"
+        ) from exc
     return {"input_rows": len(rows), "bronze_versions": bronze, "current_orders": silver, "revenue_days": gold}
 
 
 def report(database_path: Path) -> list[dict[str, int | str]]:
     if not database_path.is_file():
         raise FileNotFoundError(
-            f"Database not found: {database_path}. Check the --db path, or create it first with "
-            f"`python3 -m launchpad.pipeline run --input <orders.csv> --db {database_path}`."
+            f"Database not found: {database_path}. Check the --db path, or create it first "
+            "by running `python3 -m launchpad.pipeline run` with a valid CSV and this "
+            "database path."
         )
     try:
         with sqlite3.connect(database_path) as connection:
@@ -143,7 +150,7 @@ def report(database_path: Path) -> list[dict[str, int | str]]:
                 )
             ]
     except sqlite3.DatabaseError as exc:
-        raise sqlite3.DatabaseError(
+        raise type(exc)(
             f"Cannot read report database {database_path}. Use a SQLite file created by "
             f"`python3 -m launchpad.pipeline run`. Original error: {exc}"
         ) from exc

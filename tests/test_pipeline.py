@@ -82,7 +82,11 @@ class PipelineTests(unittest.TestCase):
 
     def run_cli(self, *argv):
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch("sys.argv", ["launchpad.pipeline", *argv]),                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        with (
+            mock.patch("sys.argv", ["launchpad.pipeline", *argv]),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
             try:
                 main()
                 code = 0
@@ -115,6 +119,33 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn(str(self.database), err)
         self.assertIn("file is not a database", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_run_unreadable_database_is_actionable(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        self.database.write_text("not a database", encoding="utf-8")
+        code, out, err = self.run_cli(
+            "run", "--input", str(self.source), "--db", str(self.database)
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn(str(self.database), err)
+        self.assertIn("SQLite", err)
+        self.assertIn("file is not a database", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_run_database_directory_is_actionable(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        database_directory = self.directory / "database-directory"
+        database_directory.mkdir()
+        code, out, err = self.run_cli(
+            "run", "--input", str(self.source), "--db", str(database_directory)
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn(str(database_directory), err)
+        self.assertIn("SQLite", err)
+        self.assertIn("unable to open database file", err)
         self.assertNotIn("Traceback", err)
 
     def test_cli_success_output_unchanged(self):
