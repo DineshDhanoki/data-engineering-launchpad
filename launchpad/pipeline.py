@@ -74,7 +74,13 @@ def initialize(connection: sqlite3.Connection) -> None:
 
 
 def run(input_path: Path, database_path: Path) -> dict[str, int]:
-    rows = read_orders(input_path)
+    try:
+        rows = read_orders(input_path)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Input CSV not found: {input_path}. Check the --input path "
+            f"(the Lab 01 sample is labs/01-orders/orders.csv). Original error: {exc}"
+        ) from exc
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(database_path) as connection:
         initialize(connection)
@@ -124,14 +130,23 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
 
 def report(database_path: Path) -> list[dict[str, int | str]]:
     if not database_path.is_file():
-        raise FileNotFoundError(f"Database not found: {database_path}")
-    with sqlite3.connect(database_path) as connection:
-        return [
-            {"order_date": day, "paid_orders": count, "revenue_cents": cents}
-            for day, count, cents in connection.execute(
-                "SELECT order_date, paid_orders, revenue_cents FROM daily_revenue ORDER BY order_date"
-            )
-        ]
+        raise FileNotFoundError(
+            f"Database not found: {database_path}. Check the --db path, or create it first with "
+            f"`python3 -m launchpad.pipeline run --input <orders.csv> --db {database_path}`."
+        )
+    try:
+        with sqlite3.connect(database_path) as connection:
+            return [
+                {"order_date": day, "paid_orders": count, "revenue_cents": cents}
+                for day, count, cents in connection.execute(
+                    "SELECT order_date, paid_orders, revenue_cents FROM daily_revenue ORDER BY order_date"
+                )
+            ]
+    except sqlite3.DatabaseError as exc:
+        raise sqlite3.DatabaseError(
+            f"Cannot read report database {database_path}. Use a SQLite file created by "
+            f"`python3 -m launchpad.pipeline run`. Original error: {exc}"
+        ) from exc
 
 
 def main() -> None:
@@ -143,7 +158,10 @@ def main() -> None:
     report_command = subparsers.add_parser("report", help="show daily paid revenue")
     report_command.add_argument("--db", type=Path, required=True)
     args = parser.parse_args()
-    result = run(args.input, args.db) if args.command == "run" else report(args.db)
+    try:
+        result = run(args.input, args.db) if args.command == "run" else report(args.db)
+    except (FileNotFoundError, sqlite3.DatabaseError) as exc:
+        parser.error(str(exc))
     print(json.dumps(result, indent=2))
 
 

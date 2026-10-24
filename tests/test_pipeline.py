@@ -1,10 +1,14 @@
+import contextlib
 import csv
+import io
+import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from launchpad.pipeline import read_orders, report, run
+from launchpad.pipeline import main, read_orders, report, run
 
 HEADER = ["order_id", "customer_id", "order_date", "amount_cents", "status", "updated_at"]
 
@@ -75,6 +79,56 @@ class PipelineTests(unittest.TestCase):
     def test_missing_report_database_fails(self):
         with self.assertRaises(FileNotFoundError):
             report(self.database)
+
+    def run_cli(self, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("sys.argv", ["launchpad.pipeline", *argv]),                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                main()
+                code = 0
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_cli_missing_input_is_actionable(self):
+        missing = self.directory / "missing.csv"
+        code, out, err = self.run_cli("run", "--input", str(missing), "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn(str(missing), err)
+        self.assertIn("--input", err)
+        self.assertIn("No such file", err)  # original error stays visible
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(self.database.exists())
+
+    def test_cli_missing_report_database_is_actionable(self):
+        code, out, err = self.run_cli("report", "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn(str(self.database), err)
+        self.assertIn("launchpad.pipeline run", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_unreadable_report_database_keeps_original_error(self):
+        self.database.write_text("not a database", encoding="utf-8")
+        code, out, err = self.run_cli("report", "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertIn(str(self.database), err)
+        self.assertIn("file is not a database", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_success_output_unchanged(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        code, out, _ = self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+        self.assertEqual(code, 0)
+        self.assertEqual(out, json.dumps(
+            {"input_rows": 1, "bronze_versions": 1, "current_orders": 1, "revenue_days": 1}, indent=2
+        ) + "\n")
+        code, out, _ = self.run_cli("report", "--db", str(self.database))
+        self.assertEqual(code, 0)
+        self.assertEqual(out, json.dumps(
+            [{"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100}], indent=2
+        ) + "\n")
 
 
 if __name__ == "__main__":
