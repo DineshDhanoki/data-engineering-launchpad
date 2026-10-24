@@ -2,6 +2,7 @@ import csv
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from launchpad.pipeline import read_orders, report, run
@@ -71,6 +72,35 @@ class PipelineTests(unittest.TestCase):
     def test_timezone_normalization(self):
         self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T15:30:00+05:30"]])
         self.assertEqual(read_orders(self.source)[0][-1], "2026-01-01T10:00:00+00:00")
+
+    def test_cross_midnight_normalization_preserves_order_date_and_rerun(self):
+        cases = [
+            ("2026-01-01T00:30:00+05:30", "2025-12-31T19:00:00+00:00"),
+            ("2026-01-01T23:30:00-02:30", "2026-01-02T02:00:00+00:00"),
+        ]
+        for index, (timestamp, expected_utc) in enumerate(cases):
+            with self.subTest(timestamp=timestamp):
+                database = self.directory / f"midnight-{index}.db"
+                self.write([["tz-1", "c1", "2026-01-01", "100", "paid", timestamp]])
+                expected_row = ("tz-1", "c1", "2026-01-01", 100, "paid", expected_utc)
+                self.assertEqual(read_orders(self.source), [expected_row])
+                expected_counts = {
+                    "input_rows": 1, "bronze_versions": 1,
+                    "current_orders": 1, "revenue_days": 1,
+                }
+                expected_report = [
+                    {"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100},
+                ]
+                for attempt in range(2):
+                    with self.subTest(attempt=attempt):
+                        self.assertEqual(run(self.source, database), expected_counts)
+                        self.assertEqual(report(database), expected_report)
+                        with closing(sqlite3.connect(database)) as connection:
+                            for table in ("bronze_orders", "silver_orders"):
+                                self.assertEqual(
+                                    connection.execute(f"SELECT * FROM {table}").fetchall(),
+                                    [expected_row],
+                                )
 
     def test_missing_report_database_fails(self):
         with self.assertRaises(FileNotFoundError):
