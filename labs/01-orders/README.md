@@ -17,7 +17,8 @@ Run the commands in the root README. Inspect the database with any SQLite viewer
 ### Cross-midnight UTC exercise
 
 Prerequisites: Python 3.11+, the repository root as your working directory, and
-the first Lab 01 run above. No extra packages or cloud account are needed.
+the first Lab 01 run in the root README. No extra packages or cloud account are
+needed.
 The goal is to distinguish an event's instant from its source business date,
 then verify that retrying the same input does not duplicate revenue.
 
@@ -45,7 +46,13 @@ Both runs return `input_rows: 1`, `bronze_versions: 1`, `current_orders: 1`, and
 `revenue_days: 1`. Both reports contain exactly:
 
 ```json
-[{"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100}]
+[
+  {
+    "order_date": "2026-01-01",
+    "paid_orders": 1,
+    "revenue_cents": 100
+  }
+]
 ```
 
 The final query prints:
