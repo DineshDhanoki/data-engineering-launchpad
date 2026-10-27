@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-from launchpad.pipeline import main, read_orders, report, run
+from launchpad.pipeline import initialize, main, read_orders, report, run
 
 HEADER = ["order_id", "customer_id", "order_date", "amount_cents", "status", "updated_at"]
 
@@ -190,6 +190,97 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(out, json.dumps(
             [{"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100}], indent=2
         ) + "\n")
+
+
+class ReadOrdersValidationTests(unittest.TestCase):
+    """Malformed CSV input must fail with a clear error and never touch the database."""
+
+    VALID_ROW = ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.source = self.directory / "orders.csv"
+        self.new_database = self.directory / "new.db"
+        self.existing_database = self.directory / "existing.db"
+        self.seed_existing_database()
+
+    def seed_existing_database(self):
+        # Populate the database directly and close it, so the file is not left open.
+        with closing(sqlite3.connect(self.existing_database)) as connection:
+            initialize(connection)
+            with connection:
+                connection.execute(
+                    "INSERT INTO bronze_orders VALUES (?, ?, ?, ?, ?, ?)",
+                    ("seed", "c0", "2025-12-31", 50, "paid", "2025-12-31T09:00:00+00:00"),
+                )
+                connection.execute(
+                    "INSERT INTO silver_orders VALUES (?, ?, ?, ?, ?, ?)",
+                    ("seed", "c0", "2025-12-31", 50, "paid", "2025-12-31T09:00:00+00:00"),
+                )
+                connection.execute("INSERT INTO daily_revenue VALUES ('2025-12-31', 1, 50)")
+        self.original_contents = self.database_contents(self.existing_database)
+
+    @staticmethod
+    def database_contents(database):
+        with closing(sqlite3.connect(database)) as connection:
+            return {
+                table: connection.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+                for table in ("bronze_orders", "silver_orders", "daily_revenue")
+            }
+
+    def write_csv(self, text):
+        self.source.write_text(text, encoding="utf-8")
+
+    def write_rows(self, rows, header=HEADER):
+        with self.source.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(header)
+            writer.writerows(rows)
+
+    def assert_rejected(self, message):
+        """Fail for a new database path and for an already populated one."""
+        with self.assertRaisesRegex(ValueError, message):
+            run(self.source, self.new_database)
+        self.assertFalse(self.new_database.exists())
+
+        with self.assertRaisesRegex(ValueError, message):
+            run(self.source, self.existing_database)
+        self.assertEqual(self.database_contents(self.existing_database), self.original_contents)
+
+    def test_blank_order_id_reports_row_number(self):
+        self.write_rows([self.VALID_ROW, ["  ", "c2", "2026-01-01", "200", "paid", "2026-01-01T11:00:00Z"]])
+        self.assert_rejected(r"row 3: missing ID")
+
+    def test_blank_customer_id_reports_row_number(self):
+        self.write_rows([["a", "", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        self.assert_rejected(r"row 2: missing ID")
+
+    def test_unsupported_status_reports_row_number(self):
+        self.write_rows([self.VALID_ROW, ["b", "c2", "2026-01-01", "200", "shipped", "2026-01-01T11:00:00Z"]])
+        self.assert_rejected(r"row 3: missing ID or unsupported status")
+
+    def test_missing_column_in_header_is_rejected(self):
+        self.write_rows([self.VALID_ROW[:5]], header=HEADER[:5])
+        self.assert_rejected(r"^CSV must contain exactly these columns")
+
+    def test_extra_column_in_header_is_rejected(self):
+        self.write_rows([self.VALID_ROW + ["note"]], header=HEADER + ["note"])
+        self.assert_rejected(r"^CSV must contain exactly these columns")
+
+    def test_empty_file_is_rejected(self):
+        self.write_csv("")
+        self.assert_rejected(r"^CSV must contain exactly these columns")
+
+    def test_header_only_file_is_rejected(self):
+        self.write_rows([])
+        self.assert_rejected(r"^CSV contains no orders$")
+
+    def test_row_with_too_many_fields_is_rejected(self):
+        # csv.DictReader stores surplus values under the None key instead of failing.
+        self.write_rows([self.VALID_ROW, ["b", "c2", "2026-01-01", "200", "paid", "2026-01-01T11:00:00Z", "extra"]])
+        self.assert_rejected(r"row 3: expected 6 fields, found more")
 
 
 if __name__ == "__main__":

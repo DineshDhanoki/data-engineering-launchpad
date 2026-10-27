@@ -20,6 +20,8 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str]]:
         rows = []
         for number, raw in enumerate(reader, start=2):
             try:
+                if None in raw:
+                    raise ValueError(f"expected {len(FIELDS)} fields, found more")
                 order_id = raw["order_id"].strip()
                 customer_id = raw["customer_id"].strip()
                 order_date = date.fromisoformat(raw["order_date"].strip()).isoformat()
