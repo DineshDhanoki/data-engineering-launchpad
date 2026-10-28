@@ -15,10 +15,21 @@ These are representative practice prompts, **not** claims about a company's actu
 
 Both examples use the tiny synthetic fixture in [`sql/newcomer_joins_fixture.sql`](sql/newcomer_joins_fixture.sql) (customers, orders, order_items; money in integer cents). The SQL is written for SQLite.
 
+Use a fresh, disposable in-memory session. From the repository root:
+
 ```bash
-sqlite3 demo.db < docs/sql/newcomer_joins_fixture.sql
-sqlite3 demo.db
+sqlite3 :memory:
 ```
+
+Then, at the `sqlite>` prompt, load the fixture:
+
+```text
+.read docs/sql/newcomer_joins_fixture.sql
+```
+
+Run the example queries in that same session. The in-memory database disappears when you exit (`.quit`), so opening a new session always gives you a clean start, and no existing database file is touched.
+
+If you prefer a file, always load the fixture into a **new** file name (for example `sqlite3 newcomer-practice.db`). Do not reuse a database you already practice in: the fixture creates tables, so loading it twice into the same file fails with "table already exists".
 
 | Table | Grain (one row per) | Key |
 |---|---|---|
