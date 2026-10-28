@@ -60,7 +60,7 @@ class PipelineTests(unittest.TestCase):
         ])
         with self.assertRaisesRegex(ValueError, "Conflicting version"):
             run(self.source, self.database)
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM bronze_orders").fetchone()[0], 1)
         self.assertEqual(report(self.database)[0]["revenue_cents"], 100)
 
