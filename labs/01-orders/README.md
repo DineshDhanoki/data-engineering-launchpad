@@ -6,6 +6,62 @@ Build a local batch pipeline that can be rerun safely. The CSV is a synthetic ch
 
 Run the commands in the root README. Inspect the database with any SQLite viewer or Python's `sqlite3` module. Predict the final paid revenue before running `report`.
 
+## How data moves through the pipeline
+
+Lab 01 is a small teaching pipeline, not a production warehouse design. It
+uses three layers that are often called bronze, silver, and gold:
+
+- **bronze** keeps every valid source version, as received
+- **silver** keeps one current row per business entity
+- **gold** keeps a small summary that a report reads
+
+```mermaid
+flowchart LR
+    csv["orders.csv<br/>one row per source version"]
+    bronze["bronze_orders<br/>grain: one row per order version<br/>key: (order_id, updated_at)"]
+    silver["silver_orders<br/>grain: one current row per order<br/>key: order_id"]
+    gold["daily_revenue<br/>grain: one row per order_date<br/>key: order_date"]
+
+    csv -->|"validate whole file;<br/>normalize updated_at to UTC"| bronze
+    bronze -->|"keep the latest updated_at<br/>for each order_id"| silver
+    silver -->|"current status = paid;<br/>COUNT and SUM by order_date"| gold
+```
+
+The same flow as plain text, for viewers that do not render Mermaid:
+
+```text
+orders.csv
+   |  validate every row first, normalize updated_at to UTC
+   v
+bronze_orders   one row per (order_id, updated_at)   key: (order_id, updated_at)
+   |  for each order_id, keep only the row with the latest updated_at
+   v
+silver_orders   one current row per order            key: order_id
+   |  keep rows whose current status is paid, group by order_date
+   v
+daily_revenue   one row per order_date               key: order_date
+```
+
+| Table | Grain (one row per) | Primary key | Built from |
+|---|---|---|---|
+| `bronze_orders` | order version | `(order_id, updated_at)` | Every validated CSV row, with `updated_at` stored in UTC. A rerun of the same version is skipped; the same key with different values is rejected. |
+| `silver_orders` | order | `order_id` | Rebuilt each run from bronze: the version with the latest `updated_at` for each `order_id`. |
+| `daily_revenue` | order date | `order_date` | Rebuilt each run from silver: counts and sums only orders whose **current** status is `paid`. |
+
+**Why bronze can hold several versions of one order but silver cannot:**
+bronze's key is the pair `(order_id, updated_at)`, so a later update to the
+same order has a different key and is stored alongside the earlier one. That
+keeps the history. Silver's key is `order_id` alone, so there is room for only
+one row per order, and the pipeline fills it with the latest version.
+
+The sample file shows this. `o-101` arrives twice: `pending` at
+`2026-01-02T11:00:00+00:00`, then `paid` at `2026-01-03T12:00:00+00:00`.
+Bronze stores both rows (4 versions in total), silver keeps only the `paid`
+row (3 current orders), and `daily_revenue` counts `o-101` as paid on its
+`order_date`, 2026-01-02 (2 revenue days). Because gold reads the current
+status from silver, a later `refunded` or `cancelled` version would remove
+that order from the report on the next run.
+
 ## Exercises
 
 1. Run the same file twice. Why are the counts and revenue unchanged?
