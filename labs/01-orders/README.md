@@ -11,7 +11,7 @@ Run the commands in the root README. Inspect the database with any SQLite viewer
 Lab 01 is a small teaching pipeline, not a production warehouse design. It
 uses three layers that are often called bronze, silver, and gold:
 
-- **bronze** keeps every valid source version, as received
+- **bronze** keeps every valid source version, with `updated_at` normalized to UTC
 - **silver** keeps one current row per business entity
 - **gold** keeps a small summary that a report reads
 
