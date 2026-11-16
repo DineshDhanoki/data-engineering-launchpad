@@ -103,6 +103,12 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
             f"Input CSV not found: {input_path}. Check the --input path "
             f"(the Lab 01 sample is labs/01-orders/orders.csv). Original error: {exc}"
         ) from exc
+    # Reject conflicting versions inside the file before creating the database:
+    # same (order_id, updated_at) key, different values. Identical repeats pass.
+    versions = {}
+    for row in rows:
+        if versions.setdefault((row[0], row[5]), row) != row:
+            raise ValueError(f"Conflicting version for order {row[0]} at {row[5]}")
     database_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with closing(sqlite3.connect(database_path)) as connection:
@@ -191,7 +197,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         result = run(args.input, args.db) if args.command == "run" else report(args.db)
-    except (FileNotFoundError, sqlite3.DatabaseError) as exc:
+    except (FileNotFoundError, sqlite3.DatabaseError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, indent=2))
 

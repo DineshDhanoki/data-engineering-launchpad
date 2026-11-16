@@ -251,6 +251,75 @@ class PipelineTests(unittest.TestCase):
             [{"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100}], indent=2
         ) + "\n")
 
+    def test_cli_malformed_header_is_actionable(self):
+        self.source.write_text("order_id,customer\na,c1\n", encoding="utf-8")
+        code, out, err = self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("error: CSV must contain exactly these columns", err)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(self.database.exists())
+
+    def test_cli_malformed_row_reports_row_number(self):
+        self.write([
+            ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"],
+            ["b", "c2", "2026-01-01", "200", "shipped", "2026-01-01T11:00:00Z"],
+        ])
+        code, out, err = self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("error: Invalid CSV row 3: missing ID or unsupported status", err)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(self.database.exists())
+
+    def test_cli_conflicting_version_leaves_database_unchanged(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        run(self.source, self.database)
+        before = self.database.read_bytes()
+        self.write([
+            ["b", "c2", "2026-01-01", "200", "paid", "2026-01-01T11:00:00Z"],
+            ["a", "c1", "2026-01-01", "999", "paid", "2026-01-01T10:00:00Z"],
+        ])
+        code, out, err = self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("error: Conflicting version for order a at 2026-01-01T10:00:00+00:00", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.database.read_bytes(), before)
+
+    def test_cli_conflicting_versions_in_one_file_create_nothing(self):
+        self.write([
+            ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"],
+            ["a", "c1", "2026-01-01", "999", "paid", "2026-01-01T10:00:00Z"],
+        ])
+        database = self.directory / "new-folder" / "orders.db"
+        code, out, err = self.run_cli("run", "--input", str(self.source), "--db", str(database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("error: Conflicting version for order a at 2026-01-01T10:00:00+00:00", err)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(database.parent.exists())
+
+    def test_identical_duplicate_versions_are_accepted(self):
+        row = ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]
+        self.write([row, row])
+        self.assertEqual(run(self.source, self.database), {
+            "input_rows": 2, "bronze_versions": 1, "current_orders": 1, "revenue_days": 1,
+        })
+
+    def test_row_error_keeps_original_cause(self):
+        self.write([["a", "c1", "2026-01-01", "100", "shipped", "2026-01-01T10:00:00Z"]])
+        with self.assertRaisesRegex(ValueError, "Invalid CSV row 2") as caught:
+            read_orders(self.source)
+        self.assertIsInstance(caught.exception.__cause__, ValueError)
+        self.assertIn("unsupported status", str(caught.exception.__cause__))
+
+    def test_cli_does_not_convert_unexpected_errors(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        with mock.patch("launchpad.pipeline.run", side_effect=RuntimeError("unexpected bug")):
+            with self.assertRaisesRegex(RuntimeError, "unexpected bug"):
+                self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+
 
 class ReadOrdersValidationTests(unittest.TestCase):
     """Malformed CSV input must fail with a clear error and never touch the database."""
@@ -345,6 +414,11 @@ class ReadOrdersValidationTests(unittest.TestCase):
         # csv.DictReader stores surplus values under the None key instead of failing.
         self.write_rows([self.VALID_ROW, ["b", "c2", "2026-01-01", "200", "paid", "2026-01-01T11:00:00Z", "extra"]])
         self.assert_rejected(r"row 3: expected 6 fields, found more")
+
+    def test_conflicting_versions_in_one_file_are_rejected(self):
+        self.write_rows([self.VALID_ROW, ["a", "c1", "2026-01-01", "999", "paid", "2026-01-01T10:00:00Z"]])
+        self.assertEqual(len(read_orders(self.source)), 2)  # parsing alone does not compare rows
+        self.assert_rejected(r"^Conflicting version for order a at 2026-01-01T10:00:00\+00:00$")
 
 
 if __name__ == "__main__":
