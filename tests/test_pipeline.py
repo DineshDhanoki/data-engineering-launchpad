@@ -28,6 +28,43 @@ class PipelineTests(unittest.TestCase):
             writer.writerow(HEADER)
             writer.writerows(rows)
 
+    def test_amount_storage_boundaries(self):
+        for amount in ("0", str(2**63 - 1), "0" * 5000 + "1"):
+            with self.subTest(amount=amount[:30]):
+                self.write([["a", "c1", "2026-01-01", amount, "paid", "2026-01-01T10:00:00Z"]])
+                expected = int(amount.lstrip("0") or "0")
+                self.assertEqual(read_orders(self.source)[0][3], expected)
+                if self.database.exists():
+                    self.database.unlink()
+                run(self.source, self.database)
+                self.assertEqual(report(self.database)[0]["revenue_cents"], expected)
+
+    def test_out_of_range_amount_does_not_open_or_change_database(self):
+        for amount in (str(2**63), "9" * 5000):
+            for populated in (False, True):
+                with self.subTest(amount=amount[:30], populated=populated):
+                    if self.database.exists():
+                        self.database.unlink()
+                    if populated:
+                        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+                        run(self.source, self.database)
+                        before = self.database.read_bytes()
+                    self.write([
+                        ["b", "c1", "2026-01-01", "10", "paid", "2026-01-01T10:00:00Z"],
+                        ["c", "c1", "2026-01-01", amount, "paid", "2026-01-01T10:00:00Z"],
+                    ])
+                    message = "Invalid CSV row 3: amount_cents must be between 0 and 9223372036854775807"
+                    with self.assertRaisesRegex(ValueError, message):
+                        read_orders(self.source)
+                    with mock.patch("launchpad.pipeline.sqlite3.connect") as connect:
+                        with self.assertRaisesRegex(ValueError, message):
+                            run(self.source, self.database)
+                        connect.assert_not_called()
+                    if populated:
+                        self.assertEqual(self.database.read_bytes(), before)
+                    else:
+                        self.assertFalse(self.database.exists())
+
     def test_rerun_is_idempotent_and_latest_version_wins(self):
         self.write([
             ["a", "c1", "2026-01-01", "100", "pending", "2026-01-01T10:00:00Z"],

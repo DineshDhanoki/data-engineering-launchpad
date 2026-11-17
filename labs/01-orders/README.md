@@ -215,6 +215,16 @@ unchanged counts, stored rows, and revenue on retry.
 Primary source: Python 3.11 [`datetime.astimezone`](https://docs.python.org/3.11/library/datetime.html#datetime.datetime.astimezone).
 Reviewed: 2026-10-23 (UTC).
 
+## Amount storage range
+
+`amount_cents` must contain ASCII decimal digits and be between `0` and
+`9223372036854775807` (inclusive). This is SQLite's signed 64-bit integer
+storage limit, not a business limit on order value. Leading zeros are allowed.
+An amount outside this range reports the CSV row number before the database is
+opened, leaving an existing database unchanged and creating no new database.
+Totals across several orders must also fit SQLite's integer range; validating
+individual amounts does not guarantee that their sum fits.
+
 ## Design choices and limits
 
 The pipeline validates before writing and uses one database transaction for each run. It rebuilds its small derived tables each run; that is simple and deterministic but not efficient for a large dataset. A production-scale version would use bounded incremental windows or partitioned processing, explicit source contracts, observability, and a real storage/compute platform. The synthetic sample does not represent production diversity, privacy requirements, or performance.

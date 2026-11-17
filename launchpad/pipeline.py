@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 FIELDS = ("order_id", "customer_id", "order_date", "amount_cents", "status", "updated_at")
+MAX_AMOUNT_CENTS = 2**63 - 1
 OPTIONAL_FIELDS = ("sales_channel",)
 STATUSES = {"paid", "pending", "cancelled", "refunded"}
 
@@ -38,7 +39,15 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
                 amount_text = raw["amount_cents"].strip()
                 if not amount_text.isascii() or not amount_text.isdecimal():
                     raise ValueError("amount_cents must be a non-negative integer")
-                amount_cents = int(amount_text)
+                # Compare digits before int() so arbitrarily long inputs get the
+                # same storage-range error, without hitting Python's digit limit.
+                amount_digits = amount_text.lstrip("0") or "0"
+                maximum = str(MAX_AMOUNT_CENTS)
+                if len(amount_digits) > len(maximum) or (
+                    len(amount_digits) == len(maximum) and amount_digits > maximum
+                ):
+                    raise ValueError(f"amount_cents must be between 0 and {MAX_AMOUNT_CENTS}")
+                amount_cents = int(amount_digits)
                 status = raw["status"].strip().lower()
                 sales_channel = (raw.get("sales_channel") or "").strip() or "unknown"
                 timestamp = datetime.fromisoformat(raw["updated_at"].strip())
