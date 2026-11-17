@@ -13,6 +13,13 @@ OPTIONAL_FIELDS = ("sales_channel",)
 STATUSES = {"paid", "pending", "cancelled", "refunded"}
 
 
+class PipelineInputError(ValueError):
+    """Invalid CSV input or a conflicting order version: the user can fix the input.
+
+    It subclasses ValueError so callers that already catch ValueError keep working.
+    """
+
+
 def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
     """Parse and validate the entire input before opening a write transaction."""
     with path.open(newline="", encoding="utf-8") as handle:
@@ -24,7 +31,7 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
             or set(reader.fieldnames) - set(FIELDS) - set(OPTIONAL_FIELDS)
         ):
             expected = ", ".join((*FIELDS, "[sales_channel]"))
-            raise ValueError(f"CSV must contain exactly these columns (sales_channel is optional): {expected}")
+            raise PipelineInputError(f"CSV must contain exactly these columns (sales_channel is optional): {expected}")
         rows = []
         for number, raw in enumerate(reader, start=2):
             try:
@@ -51,14 +58,17 @@ def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
                     raise ValueError("updated_at precedes order_date")
                 rows.append((order_id, customer_id, order_date, amount_cents, status, updated_at, sales_channel))
             except (KeyError, AttributeError, TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid CSV row {number}: {exc}") from exc
+                raise PipelineInputError(f"Invalid CSV row {number}: {exc}") from exc
     if not rows:
-        raise ValueError("CSV contains no orders")
+        raise PipelineInputError("CSV contains no orders")
     return rows
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+    """Create or migrate the tables. Does not commit: the caller owns the transaction."""
+    # One execute() per statement, not executescript(): executescript() commits any open
+    # transaction first, which would make run()'s schema changes permanent before ingestion.
+    for statement in (
         """
         CREATE TABLE IF NOT EXISTS bronze_orders (
             order_id TEXT NOT NULL,
@@ -69,7 +79,9 @@ def initialize(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             sales_channel TEXT NOT NULL DEFAULT 'unknown',
             PRIMARY KEY (order_id, updated_at)
-        );
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS silver_orders (
             order_id TEXT PRIMARY KEY,
             customer_id TEXT NOT NULL,
@@ -78,14 +90,17 @@ def initialize(connection: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             sales_channel TEXT NOT NULL DEFAULT 'unknown'
-        );
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS daily_revenue (
             order_date TEXT PRIMARY KEY,
             paid_orders INTEGER NOT NULL,
             revenue_cents INTEGER NOT NULL
-        );
-        """
-    )
+        )
+        """,
+    ):
+        connection.execute(statement)
     # Keep databases created by the original six-column pipeline usable.
     for table in ("bronze_orders", "silver_orders"):
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
@@ -103,17 +118,26 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
             f"Input CSV not found: {input_path}. Check the --input path "
             f"(the Lab 01 sample is labs/01-orders/orders.csv). Original error: {exc}"
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise PipelineInputError(
+            f"Input CSV is not valid UTF-8: {input_path}. Save it with UTF-8 encoding "
+            f"and rerun. Original error: {exc}"
+        ) from exc
     # Reject conflicting versions inside the file before creating the database:
     # same (order_id, updated_at) key, different values. Identical repeats pass.
     versions = {}
     for row in rows:
         if versions.setdefault((row[0], row[5]), row) != row:
-            raise ValueError(f"Conflicting version for order {row[0]} at {row[5]}")
+            raise PipelineInputError(f"Conflicting version for order {row[0]} at {row[5]}")
     database_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with closing(sqlite3.connect(database_path)) as connection:
-            initialize(connection)
+        # The explicit BEGIN covers the schema migration (DDL) as well as the ingestion;
+        # isolation_level=None keeps the sqlite3 module from adding its own BEGIN/COMMIT.
+        # On any error `with connection` rolls everything back, leaving the file unchanged.
+        with closing(sqlite3.connect(database_path, isolation_level=None)) as connection:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                initialize(connection)
                 for row in rows:
                     existing = connection.execute(
                         "SELECT order_id, customer_id, order_date, amount_cents, status, updated_at, sales_channel "
@@ -122,7 +146,7 @@ def run(input_path: Path, database_path: Path) -> dict[str, int]:
                     ).fetchone()
                     if existing is not None:
                         if existing != row:
-                            raise ValueError(f"Conflicting version for order {row[0]} at {row[5]}")
+                            raise PipelineInputError(f"Conflicting version for order {row[0]} at {row[5]}")
                         continue
                     connection.execute(
                         "INSERT INTO bronze_orders "
@@ -197,7 +221,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         result = run(args.input, args.db) if args.command == "run" else report(args.db)
-    except (FileNotFoundError, sqlite3.DatabaseError, ValueError) as exc:
+    except (FileNotFoundError, sqlite3.DatabaseError, PipelineInputError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, indent=2))
 

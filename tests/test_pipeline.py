@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-from launchpad.pipeline import initialize, main, read_orders, report, run
+from launchpad.pipeline import PipelineInputError, initialize, main, read_orders, report, run
 
 HEADER = ["order_id", "customer_id", "order_date", "amount_cents", "status", "updated_at"]
 
@@ -313,6 +313,135 @@ class PipelineTests(unittest.TestCase):
             read_orders(self.source)
         self.assertIsInstance(caught.exception.__cause__, ValueError)
         self.assertIn("unsupported status", str(caught.exception.__cause__))
+
+    def create_legacy_database(self):
+        """The schema written by the pipeline before sales_channel existed (six columns)."""
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.executescript("""
+                CREATE TABLE bronze_orders (
+                    order_id TEXT NOT NULL,
+                    customer_id TEXT NOT NULL,
+                    order_date TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
+                    status TEXT NOT NULL CHECK (status IN ('paid', 'pending', 'cancelled', 'refunded')),
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (order_id, updated_at));
+                CREATE TABLE silver_orders (
+                    order_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, order_date TEXT NOT NULL,
+                    amount_cents INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE daily_revenue (
+                    order_date TEXT PRIMARY KEY, paid_orders INTEGER NOT NULL, revenue_cents INTEGER NOT NULL);
+                INSERT INTO bronze_orders VALUES ('a','c1','2026-01-01',100,'paid','2026-01-01T10:00:00+00:00');
+                INSERT INTO silver_orders VALUES ('a','c1','2026-01-01',100,'paid','2026-01-01T10:00:00+00:00');
+                INSERT INTO daily_revenue VALUES ('2026-01-01', 1, 100);
+            """)
+
+    def database_state(self):
+        with closing(sqlite3.connect(self.database)) as connection:
+            state = {
+                "schema": connection.execute(
+                    "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+                ).fetchall(),
+                "bronze_columns": connection.execute("PRAGMA table_info(bronze_orders)").fetchall(),
+                "silver_columns": connection.execute("PRAGMA table_info(silver_orders)").fetchall(),
+                "bronze_rows": connection.execute("SELECT * FROM bronze_orders ORDER BY 1, 6").fetchall(),
+                "silver_rows": connection.execute("SELECT * FROM silver_orders ORDER BY 1").fetchall(),
+            }
+        state["gold_report"] = report(self.database)
+        return state
+
+    def test_rejected_import_leaves_legacy_database_unchanged(self):
+        self.create_legacy_database()
+        before = self.database_state()
+        self.assertNotIn("sales_channel", [column[1] for column in before["bronze_columns"]])
+        self.write([
+            ["b", "c2", "2026-01-02", "200", "paid", "2026-01-02T10:00:00Z"],
+            ["a", "c1", "2026-01-01", "999", "paid", "2026-01-01T10:00:00Z"],
+        ])
+        with self.assertRaisesRegex(ValueError, "Conflicting version for order a"):
+            run(self.source, self.database)
+        after = self.database_state()
+        for key in before:
+            with self.subTest(key=key):
+                self.assertEqual(after[key], before[key])
+
+    def test_successful_import_after_rejection_migrates_legacy_database(self):
+        self.create_legacy_database()
+        self.write([["a", "c1", "2026-01-01", "999", "paid", "2026-01-01T10:00:00Z"]])
+        with self.assertRaisesRegex(ValueError, "Conflicting version"):
+            run(self.source, self.database)
+        self.write([["b", "c2", "2026-01-02", "200", "paid", "2026-01-02T10:00:00Z"]])
+        self.assertEqual(run(self.source, self.database), {
+            "input_rows": 1, "bronze_versions": 2, "current_orders": 2, "revenue_days": 2,
+        })
+        state = self.database_state()
+        for key in ("bronze_columns", "silver_columns"):
+            self.assertEqual(state[key][-1][1:5], ("sales_channel", "TEXT", 1, "'unknown'"))
+        self.assertEqual([row[-1] for row in state["bronze_rows"]], ["unknown", "unknown"])
+        self.assertEqual(state["gold_report"], [
+            {"order_date": "2026-01-01", "paid_orders": 1, "revenue_cents": 100},
+            {"order_date": "2026-01-02", "paid_orders": 1, "revenue_cents": 200},
+        ])
+
+    def test_cli_propagates_unexpected_value_error(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        bug = ValueError("unexpected internal value bug")
+        for command, target, argv in (
+            ("run", "launchpad.pipeline.run", ("run", "--input", str(self.source), "--db", str(self.database))),
+            ("report", "launchpad.pipeline.report", ("report", "--db", str(self.database))),
+        ):
+            with self.subTest(command=command), mock.patch(target, side_effect=bug):
+                with self.assertRaises(ValueError) as caught:
+                    self.run_cli(*argv)
+                self.assertIs(caught.exception, bug)
+
+    def test_cli_converts_pipeline_input_error(self):
+        self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
+        error = PipelineInputError("expected input problem")
+        with mock.patch("launchpad.pipeline.run", side_effect=error):
+            code, out, err = self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("error: expected input problem", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_non_utf8_csv_is_actionable(self):
+        header = ",".join(HEADER).encode()
+        for name, content in {
+            "row": header + b"\na,caf\xe9,2026-01-01,100,paid,2026-01-01T10:00:00Z\n",
+            "header": b"order_id\xe9" + header[len("order_id"):] + b"\n",
+        }.items():
+            with self.subTest(name=name):
+                self.source.write_bytes(content)
+                code, out, err = self.run_cli("run", "--input", str(self.source), "--db", str(self.database))
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertIn("UTF-8", err)
+                self.assertIn(str(self.source), err)
+                self.assertNotIn("Traceback", err)
+                self.assertFalse(self.database.exists())
+
+    def test_expected_input_failures_raise_pipeline_input_error(self):
+        valid = ["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]
+        self.write([valid])
+        run(self.source, self.database)
+        changed = valid[:3] + ["999"] + valid[4:]
+        cases = {
+            "header": ("order_id,customer\na,c1\n", "CSV must contain exactly these columns"),
+            "row": ([valid[:4] + ["shipped", valid[5]]], "Invalid CSV row 2"),
+            "empty": ([], "CSV contains no orders"),
+            "conflict in file": ([valid, changed], "Conflicting version"),
+            "conflict with database": ([changed], "Conflicting version"),
+        }
+        for name, (content, message) in cases.items():
+            with self.subTest(name=name):
+                if isinstance(content, str):
+                    self.source.write_text(content, encoding="utf-8")
+                else:
+                    self.write(content)
+                with self.assertRaisesRegex(PipelineInputError, message) as caught:
+                    run(self.source, self.database)
+                self.assertIsInstance(caught.exception, ValueError)  # direct callers keep working
 
     def test_cli_does_not_convert_unexpected_errors(self):
         self.write([["a", "c1", "2026-01-01", "100", "paid", "2026-01-01T10:00:00Z"]])
