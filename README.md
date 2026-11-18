@@ -19,10 +19,21 @@ These are study tracks, not strict job-title or age gates. See [roadmap](docs/ro
 
 Requires Python 3.11+; no third-party packages or cloud account.
 
+Run the same contributor check as CI from the repository root.
+
+```bash
+python -m launchpad.preflight
+```
+
+It runs the unit tests and verifies Lab 01 ingest, replay, and revenue using a
+temporary database. Use `python -m unittest discover -s tests -v` for the
+unit tests alone. To explore the first lab manually on macOS or Linux, run
+the commands below. On Windows, replace the `/tmp/...` path with a local
+path such as `launchpad-orders.db`.
+
 ```bash
 python3 -m launchpad.pipeline run --input labs/01-orders/orders.csv --db /tmp/launchpad-orders.db
 python3 -m launchpad.pipeline report --db /tmp/launchpad-orders.db
-python3 -m unittest discover -s tests -v
 ```
 
 Run `run` twice and compare the report: the result should not double-count orders. Edit a row's `updated_at` and status to see how the latest state and revenue change. The lab uses synthetic data only.
