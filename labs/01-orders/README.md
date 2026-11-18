@@ -70,6 +70,26 @@ that order from the report on the next run.
 4. Add an invalid row after a valid row. Verify that a failed run does not partially ingest the file.
 5. Add a test for a timezone offset and a new test for a refund arriving late.
 
+### When a run fails
+
+Bad input stops the run with a short error on stderr and exit code 2, and
+no orders are written. For example, after one successful run, change the
+amount of `o-100` in a copy of `orders.csv` without changing its `updated_at`
+(exercise 3) and run it against the same database:
+
+```text
+$ python3 -m launchpad.pipeline run --input my-orders.csv --db /tmp/launchpad-orders.db
+usage: pipeline.py [-h] {run,report} ...
+pipeline.py: error: Conflicting version for order o-100 at 2026-01-02T10:00:00+00:00
+$ echo $?
+2
+```
+
+To correct it, use what the message names: the expected columns, the CSV row
+number (the header is row 1), or the conflicting `(order_id, updated_at)` key.
+Fix that row, or give a genuinely new version of the order a later
+`updated_at`, then rerun the same command.
+
 ### Late-arriving update and backfill
 
 This exercise simulates receiving new source data after an earlier batch has
