@@ -17,7 +17,7 @@ These are study tracks, not strict job-title or age gates. See [roadmap](docs/ro
 
 ## Run the first lab
 
-Requires Python 3.11+; no third-party packages or cloud account.
+Requires Python 3.11–3.14; no third-party runtime packages or cloud account. CI tests this support range on Ubuntu and tests Python 3.13 on Windows.
 
 Run the same contributor check as CI from the repository root.
 
