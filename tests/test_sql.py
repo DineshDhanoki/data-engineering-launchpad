@@ -2,7 +2,6 @@ import sqlite3
 import unittest
 from pathlib import Path
 
-
 LAB = Path(__file__).resolve().parents[1] / "labs" / "02-sql"
 
 
