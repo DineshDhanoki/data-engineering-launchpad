@@ -14,6 +14,27 @@ REVENUE = [
     {"order_date": "2026-01-02", "paid_orders": 2, "revenue_cents": 3799},
     {"order_date": "2026-01-03", "paid_orders": 1, "revenue_cents": 1999},
 ]
+CHECK = {
+    "schema_version": 1,
+    "status": "pass",
+    "as_of": "2026-01-04T12:00:00+00:00",
+    "counts": {
+        "bronze_versions": 4,
+        "current_orders": 3,
+        "paid_orders": 3,
+        "revenue_days": 2,
+    },
+    "freshness": {
+        "maximum_source_updated_at": "2026-01-03T12:00:00+00:00",
+        "age_seconds": 86400,
+    },
+    "reconciliation": {
+        "passed": True,
+        "missing_dates": [],
+        "extra_dates": [],
+        "mismatched_dates": [],
+    },
+}
 
 
 def check_stage(name: str, args: list[str], expected: object = None) -> int:
@@ -55,6 +76,14 @@ def main(argv: list[str] | None = None) -> int:
             ("Lab 01 ingest", ingest, COUNTS),
             ("Lab 01 replay", ingest, COUNTS),
             ("Lab 01 revenue report", ["launchpad.pipeline", "report", "--db", database], REVENUE),
+            (
+                "Lab 01 reconciliation check",
+                [
+                    "launchpad.pipeline", "check", "--db", database,
+                    "--as-of", "2026-01-04T12:00:00+00:00",
+                ],
+                CHECK,
+            ),
         ]
         for name, args, expected in stages:
             exit_code = check_stage(name, args, expected)

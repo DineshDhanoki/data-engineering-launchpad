@@ -40,6 +40,7 @@ class PreflightTests(unittest.TestCase):
     def test_runs_public_commands_and_cleans_up_after_success(self):
         code, stdout, stderr, calls, databases = self.run_preflight(iter([
             result(), result(preflight.COUNTS), result(preflight.COUNTS), result(preflight.REVENUE),
+            result(preflight.CHECK),
         ]))
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
@@ -48,6 +49,8 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(calls[1].args[0], calls[2].args[0])
         self.assertEqual(calls[1].args[0][2:6], ["launchpad.pipeline", "run", "--input", "labs/01-orders/orders.csv"])
         self.assertEqual(calls[3].args[0][2:5], ["launchpad.pipeline", "report", "--db"])
+        self.assertEqual(calls[4].args[0][2:5], ["launchpad.pipeline", "check", "--db"])
+        self.assertIn("--as-of", calls[4].args[0])
         self.assertTrue(all(call.kwargs["cwd"] == preflight.ROOT for call in calls))
         self.assertEqual(len(set(databases)), 1)
 

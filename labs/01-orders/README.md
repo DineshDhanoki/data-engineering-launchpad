@@ -6,6 +6,11 @@ Build a local batch pipeline that can be rerun safely. The CSV is a synthetic ch
 
 Run the commands in the root README. Inspect the database with any SQLite viewer or Python's `sqlite3` module. Predict the final paid revenue before running `report`.
 
+After `run`, use the deterministic, read-only `check` command to reconcile
+gold with current paid silver orders and calculate freshness from an explicit
+observation time. See the [reconciliation runbook](../../docs/reconciliation-runbook.md)
+for the JSON contract, exact sample output, failure practice, and recovery steps.
+
 ## How data moves through the pipeline
 
 Lab 01 is a small teaching pipeline, not a production warehouse design. It
