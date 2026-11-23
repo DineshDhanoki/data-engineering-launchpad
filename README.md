@@ -34,11 +34,12 @@ path such as `launchpad-orders.db`.
 ```bash
 python3 -m launchpad.pipeline run --input labs/01-orders/orders.csv --db /tmp/launchpad-orders.db
 python3 -m launchpad.pipeline report --db /tmp/launchpad-orders.db
+python3 -m launchpad.pipeline check --db /tmp/launchpad-orders.db --as-of 2026-01-04T12:00:00+00:00
 ```
 
 Run `run` twice and compare the report: the result should not double-count orders. Edit a row's `updated_at` and status to see how the latest state and revenue change. The lab uses synthetic data only.
 
-The flow is `CSV -> validated bronze_orders -> latest silver_orders -> daily_revenue`. It validates the entire file before writing, rejects conflicting records with the same event key, commits atomically, and recomputes derived tables from a deterministic latest-record rule. See the [lab guide](labs/01-orders/README.md) for exercises and limitations.
+The flow is `CSV -> validated bronze_orders -> latest silver_orders -> daily_revenue`. It validates the entire file before writing, rejects conflicting records with the same event key, commits atomically, and recomputes derived tables from a deterministic latest-record rule. The `check` command opens that database read-only and reports deterministic reconciliation and freshness JSON. See the [lab guide](labs/01-orders/README.md) for exercises and limitations and the [reconciliation runbook](docs/reconciliation-runbook.md) for failure investigation.
 
 ## What is in this release
 

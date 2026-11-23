@@ -21,6 +21,19 @@ class PipelineInputError(ValueError):
     """
 
 
+def parse_as_of(value: str) -> datetime:
+    """Parse a timezone-aware CLI timestamp and normalize it to UTC."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--as-of must be an ISO 8601 timestamp with a timezone"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError("--as-of must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 def read_orders(path: Path) -> list[tuple[str, str, str, int, str, str, str]]:
     """Parse and validate the entire input before opening a write transaction."""
     with path.open(newline="", encoding="utf-8") as handle:
@@ -217,6 +230,115 @@ def report(database_path: Path) -> list[dict[str, int | str]]:
         ) from exc
 
 
+def check(database_path: Path, as_of: datetime) -> dict[str, object]:
+    """Return deterministic freshness and gold reconciliation metrics without writing."""
+    if not database_path.is_file():
+        raise FileNotFoundError(
+            f"Database not found: {database_path}. Check the --db path, or create it first "
+            "by running `python3 -m launchpad.pipeline run` with a valid CSV and this "
+            "database path."
+        )
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise PipelineInputError("as_of must include a timezone")
+    as_of_utc = as_of.astimezone(timezone.utc)
+
+    try:
+        uri = f"{database_path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            connection.execute("BEGIN")
+            bronze_versions = connection.execute(
+                "SELECT COUNT(*) FROM bronze_orders"
+            ).fetchone()[0]
+            current_orders = connection.execute(
+                "SELECT COUNT(*) FROM silver_orders"
+            ).fetchone()[0]
+            paid_orders = connection.execute(
+                "SELECT COUNT(*) FROM silver_orders WHERE status = 'paid'"
+            ).fetchone()[0]
+            maximum_updated_at = connection.execute(
+                "SELECT MAX(updated_at) FROM bronze_orders"
+            ).fetchone()[0]
+            expected_rows = connection.execute(
+                """
+                SELECT order_date, COUNT(*), SUM(amount_cents)
+                FROM silver_orders WHERE status = 'paid'
+                GROUP BY order_date ORDER BY order_date
+                """
+            ).fetchall()
+            actual_rows = connection.execute(
+                """
+                SELECT order_date, paid_orders, revenue_cents
+                FROM daily_revenue ORDER BY order_date
+                """
+            ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        raise type(exc)(
+            f"Cannot check database {database_path}. Use a SQLite file created by "
+            f"`python3 -m launchpad.pipeline run`. Original error: {exc}"
+        ) from exc
+
+    expected = {
+        day: {"paid_orders": count, "revenue_cents": cents}
+        for day, count, cents in expected_rows
+    }
+    actual = {
+        day: {"paid_orders": count, "revenue_cents": cents}
+        for day, count, cents in actual_rows
+    }
+    missing_dates = [
+        {"order_date": day, "expected": expected[day]}
+        for day in sorted(expected.keys() - actual.keys())
+    ]
+    extra_dates = [
+        {"order_date": day, "actual": actual[day]}
+        for day in sorted(actual.keys() - expected.keys())
+    ]
+    mismatched_dates = [
+        {"order_date": day, "expected": expected[day], "actual": actual[day]}
+        for day in sorted(expected.keys() & actual.keys())
+        if expected[day] != actual[day]
+    ]
+    reconciliation_passed = not (missing_dates or extra_dates or mismatched_dates)
+
+    freshness_age_seconds = None
+    if maximum_updated_at is not None:
+        try:
+            maximum_timestamp = datetime.fromisoformat(maximum_updated_at)
+        except ValueError as exc:
+            raise PipelineInputError(
+                f"bronze_orders contains an invalid updated_at value: {maximum_updated_at}"
+            ) from exc
+        if maximum_timestamp.tzinfo is None or maximum_timestamp.utcoffset() is None:
+            raise PipelineInputError(
+                f"bronze_orders contains an updated_at without a timezone: {maximum_updated_at}"
+            )
+        freshness_age_seconds = int(
+            (as_of_utc - maximum_timestamp.astimezone(timezone.utc)).total_seconds()
+        )
+
+    return {
+        "schema_version": 1,
+        "status": "pass" if reconciliation_passed else "fail",
+        "as_of": as_of_utc.isoformat(),
+        "counts": {
+            "bronze_versions": bronze_versions,
+            "current_orders": current_orders,
+            "paid_orders": paid_orders,
+            "revenue_days": len(actual_rows),
+        },
+        "freshness": {
+            "maximum_source_updated_at": maximum_updated_at,
+            "age_seconds": freshness_age_seconds,
+        },
+        "reconciliation": {
+            "passed": reconciliation_passed,
+            "missing_dates": missing_dates,
+            "extra_dates": extra_dates,
+            "mismatched_dates": mismatched_dates,
+        },
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -225,12 +347,24 @@ def main() -> None:
     run_command.add_argument("--db", type=Path, required=True)
     report_command = subparsers.add_parser("report", help="show daily paid revenue")
     report_command.add_argument("--db", type=Path, required=True)
+    check_command = subparsers.add_parser(
+        "check", help="report deterministic reconciliation and freshness metrics"
+    )
+    check_command.add_argument("--db", type=Path, required=True)
+    check_command.add_argument("--as-of", type=parse_as_of, required=True)
     args = parser.parse_args()
     try:
-        result = run(args.input, args.db) if args.command == "run" else report(args.db)
+        if args.command == "run":
+            result = run(args.input, args.db)
+        elif args.command == "report":
+            result = report(args.db)
+        else:
+            result = check(args.db, args.as_of)
     except (FileNotFoundError, sqlite3.DatabaseError, PipelineInputError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, indent=2))
+    if args.command == "check" and not result["reconciliation"]["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
