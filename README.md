@@ -41,6 +41,11 @@ Run `run` twice and compare the report: the result should not double-count order
 
 The flow is `CSV -> validated bronze_orders -> latest silver_orders -> daily_revenue`. It validates the entire file before writing, rejects conflicting records with the same event key, commits atomically, and recomputes derived tables from a deterministic latest-record rule. The `check` command opens that database read-only and reports deterministic reconciliation and freshness JSON. See the [lab guide](labs/01-orders/README.md) for exercises and limitations and the [reconciliation runbook](docs/reconciliation-runbook.md) for failure investigation.
 
+Need more than the four-row sample? The standard-library [synthetic order
+generator](docs/synthetic-order-generator.md) creates reproducible valid or
+intentionally invalid Lab 01 CSVs plus a machine-readable expectation manifest.
+Generated files belong under the ignored `generated/` directory.
+
 ## What is in this release
 
 - A tested, local batch pipeline, sample dataset, and SQL practice lab.
