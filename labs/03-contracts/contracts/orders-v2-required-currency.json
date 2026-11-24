@@ -1,0 +1,13 @@
+{
+  "format": "launchpad-data-contract",
+  "version": "2.required-currency",
+  "fields": {
+    "order_id": {"type": "string", "required": true},
+    "customer_id": {"type": "string", "required": true},
+    "order_date": {"type": "string", "required": true},
+    "amount_cents": {"type": "integer", "required": true},
+    "status": {"type": "string", "required": true, "allowed": ["paid", "pending", "cancelled", "refunded"]},
+    "updated_at": {"type": "string", "required": true},
+    "currency": {"type": "string", "required": true, "allowed": ["USD"]}
+  }
+}

@@ -1,0 +1,11 @@
+[
+  {
+    "order_id": "ord-002",
+    "customer_id": "cust-002",
+    "order_date": "2026-01-03",
+    "amount_cents": 1899,
+    "status": "paid",
+    "updated_at": "2026-01-03T10:00:00+00:00",
+    "sales_channel": "mobile"
+  }
+]

@@ -46,6 +46,11 @@ generator](docs/synthetic-order-generator.md) creates reproducible valid or
 intentionally invalid Lab 01 CSVs plus a machine-readable expectation manifest.
 Generated files belong under the ignored `generated/` directory.
 
+To rehearse schema evolution without a registry service, use the executable
+[data-contract compatibility lab](labs/03-contracts/README.md). It compares
+versioned contracts, validates representative records, and walks through
+consumer-first, producer-first, verification, and rollback decisions.
+
 ## What is in this release
 
 - A tested, local batch pipeline, sample dataset, and SQL practice lab.

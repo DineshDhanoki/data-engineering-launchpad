@@ -1,0 +1,10 @@
+[
+  {
+    "order_id": "ord-001",
+    "customer_id": "cust-001",
+    "order_date": "2026-01-02",
+    "amount_cents": 2599,
+    "status": "paid",
+    "updated_at": "2026-01-02T09:00:00+00:00"
+  }
+]
