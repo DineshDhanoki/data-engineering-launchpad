@@ -60,7 +60,13 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn(b"\r\n", first_csv.read_bytes())
         self.assertTrue(first_manifest.read_bytes().endswith(b"\n"))
         manifest = json.loads(first_manifest.read_text())
-        self.assertEqual(hashlib.sha256(first_csv.read_bytes()).hexdigest(), manifest["csv_sha256"])
+        csv_digest = hashlib.sha256(first_csv.read_bytes()).hexdigest()
+        manifest_digest = hashlib.sha256(first_manifest.read_bytes()).hexdigest()
+        self.assertEqual(csv_digest, manifest["csv_sha256"])
+        self.assertEqual(csv_digest, "8bcf1e157b6d803a6185fed5355a830b343dea09febef26a6f844abb6660b257")
+        self.assertEqual(
+            manifest_digest, "2f4c06e3726817a19bc64827a7ee3110161bc7fb07428b74a7f1017f3a272953"
+        )
 
     def test_different_seeds_change_data_without_breaking_invariants(self):
         first_csv, _, first = self.generate("first", seed=1)
